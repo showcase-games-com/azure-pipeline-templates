@@ -1,0 +1,199 @@
+parameters:
+- name: buildConfiguration
+  type: string
+- name: outputDirectory
+  type: string
+- name: apkReleaseName
+  type: string
+- name: packageName
+  type: string
+- name: keystoreFile
+  type: string
+- name: dotNetVersion
+  type: string
+- name: frameworkVersion
+  type: string
+- name: projName
+  type: string
+
+stages:
+- stage: UnitTestBuidlAndDeployToGooglePlayStore
+  jobs:
+
+  - job: UnitTests
+    timeoutInMinutes: 16
+    displayName: UnitTests
+    pool:
+      vmImage: 'windows-2025'
+
+    steps:
+
+      - task: UseDotNet@2
+        displayName: 'Use .NET SDK ${{ parameters.dotNetVersion }}'
+        inputs:
+          packageType: 'sdk'
+          version: '${{ parameters.dotNetVersion }}'
+
+      - script: |
+          dotnet --list-sdks
+        displayName: "List SDKs"
+
+      - script: |
+          dotnet --version
+        displayName: "Check SDK version"
+
+      - script: |
+            dotnet workload restore
+        displayName: 'Restore .NET workloads (MAUI etc.)'
+
+      - task: Bash@3
+        displayName: Run unit tests
+        inputs:
+            targetType: 'inline'
+            script: |
+                for proj in $(find . -name "*Tests.csproj"); do
+                    echo "Running tests for $proj"
+                    dotnet test "$proj" --collect "Code Coverage"
+                done
+
+
+
+  - job: BuildAndPublishToDropFolder
+    dependsOn: UnitTests
+    timeoutInMinutes: 30
+    pool:
+      vmImage: 'windows-2025'
+
+    steps:
+      - task: UseDotNet@2
+        displayName: 'Use .NET SDK ${{ parameters.dotNetVersion }}'
+        inputs:
+          packageType: 'sdk'
+          version: '${{ parameters.dotNetVersion }}'
+
+      - task: Bash@3
+        displayName: 'Show active .NET'
+        inputs:
+          targetType: 'inline'
+          script: |
+            dotnet --info
+            dotnet --list-sdks
+            which dotnet || where.exe dotnet
+
+      - task: Bash@3
+        displayName: 'Resolve project path'
+        inputs:
+          targetType: 'inline'
+          script: |
+            set -euo pipefail
+            projPath="$(find . -path "*/${{ parameters.projName }}.csproj" | head -n 1)"
+            if [ -z "$projPath" ]; then
+              echo "Could not find ${{ parameters.projName }}.csproj under the repository root."
+              exit 1
+            fi
+
+            echo "Resolved project: $projPath"
+            echo "##vso[task.setvariable variable=projPath]$projPath"
+
+      - task: Bash@3
+        displayName: 'Resolve Android manifest path'
+        inputs:
+          targetType: 'inline'
+          script: |
+            set -euo pipefail
+            projDir="$(dirname "$(projPath)")"
+            androidManifestPath="$projDir/Platforms/Android/AndroidManifest.xml"
+
+            if [ ! -f "$androidManifestPath" ]; then
+              echo "Could not find AndroidManifest.xml under $projDir"
+              exit 1
+            fi
+
+            echo "Resolved Android manifest: $androidManifestPath"
+            echo "##vso[task.setvariable variable=androidManifestPath]$androidManifestPath"
+
+      - task: Bash@3
+        displayName: 'Install/restore MAUI workload'
+        inputs:
+          targetType: 'inline'
+          script: |
+            dotnet --info
+            dotnet workload restore "$(projPath)"
+            dotnet workload list
+
+      - task: Bash@3
+        displayName: Install MAUI
+        inputs:
+          targetType: 'inline'
+          script: |
+            dotnet nuget locals all --clear
+            dotnet workload install maui android ios
+
+      - task: PowerShell@2
+        displayName: Set PackageName
+        inputs:
+          filePath: 'tools/Set-PackageName.ps1'
+          arguments: '-PackageName ${{ parameters.packageName }}'
+
+      - script: |
+          versionName="$(versionCode)"
+          echo "Updating versionCode and versionName in AndroidManifest.xml to $(versionCode)"
+          sed -i 's/versionCode=\"[0-9]*\"/versionCode=\"$(versionCode)\"/g' "$(androidManifestPath)"
+          sed -i 's/versionName=\"[^\"]*\"/versionName=\"'"$versionName"'\"/g' "$(androidManifestPath)"
+          cat "$(androidManifestPath)"
+        displayName: "Update version in AndroidManifest.xml"
+
+      - task: PowerShell@2
+        displayName: Set Beta AppIcon
+        inputs:
+          filePath: 'tools/Set-BetaAppIconAndroid.ps1'
+
+      - task: Bash@3
+        displayName: 'Build Android App'
+        inputs:
+         targetType: 'inline'
+         script: |
+           dotnet publish "$(projPath)" --configuration ${{ parameters.buildConfiguration }} --framework ${{ parameters.frameworkVersion }} --output '${{ parameters.outputDirectory }}' --verbosity normal
+
+      - task: AndroidSigning@3
+        displayName: Sign APK
+        inputs:
+          apksign: true
+          zipalign: true
+          apksignerKeystoreFile: ${{ parameters.keystoreFile }}
+          apksignerKeystoreAlias: $(keyAlias)
+          apksignerKeystorePassword: $(keystorePassword)
+          apksignerKeyPassword: $(keyPassword)
+          apkFiles: '${{ parameters.outputDirectory }}/*.apk'
+          apksignerArguments: --out ${{ parameters.outputDirectory }}/${{ parameters.apkReleaseName }} --verbose
+
+      - task: DownloadSecureFile@1
+        name: downloadKeyStore
+        displayName: Get keystore
+        inputs:
+          secureFile: '${{ parameters.keystoreFile }}'
+
+      - task: Bash@3
+        displayName: Sign AAB
+        inputs:
+          targetType: 'inline'
+          script: |
+            cd '${{ parameters.outputDirectory }}'
+            ls
+            for aabFile in *.aab; do
+              echo "Signing file: $aabFile"
+              jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 -keystore '$(downloadKeyStore.secureFilePath)' -storepass '$(keystorePassword)' -keypass '$(keyPassword)' $aabFile '$(keyAlias)'
+            done
+
+      - task: CopyFiles@2
+        displayName: Copy Android App
+        inputs:
+          sourcefolder: '${{ parameters.outputDirectory }}'
+          contents: '*.*'
+          targetFolder: $(Build.ArtifactStagingDirectory)
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: 'drop'
+          publishLocation: 'Container'
