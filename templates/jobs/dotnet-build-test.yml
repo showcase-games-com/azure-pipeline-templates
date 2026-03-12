@@ -1,0 +1,41 @@
+parameters:
+  - name: buildConfiguration
+    type: string
+    default: Release
+  - name: projectPath
+    type: string
+    default: '**/*.csproj'
+  - name: testProjectPath
+    type: string
+    default: '**/*Tests.csproj'
+  - name: dotnetVersion
+    type: string
+    default: '8.x'
+  - name: publishTestResults
+    type: boolean
+    default: true
+  - name: collectCoverage
+    type: boolean
+    default: true
+  - name: pool
+    type: object
+    default:
+      vmImage: ubuntu-latest
+
+jobs:
+  - job: Build_and_Test
+    displayName: 'Build and Test'
+    pool: ${{ parameters.pool }}
+    steps:
+      - template: ../steps/dotnet-build.yml
+        parameters:
+          buildConfiguration: ${{ parameters.buildConfiguration }}
+          projectPath: ${{ parameters.projectPath }}
+          dotnetVersion: ${{ parameters.dotnetVersion }}
+
+      - template: ../steps/dotnet-test.yml
+        parameters:
+          buildConfiguration: ${{ parameters.buildConfiguration }}
+          projectPath: ${{ parameters.testProjectPath }}
+          publishTestResults: ${{ parameters.publishTestResults }}
+          collectCoverage: ${{ parameters.collectCoverage }}

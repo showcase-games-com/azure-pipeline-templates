@@ -1,0 +1,30 @@
+parameters:
+  - name: buildConfiguration
+    type: string
+    default: Release
+  - name: projectPath
+    type: string
+    default: '**/*.csproj'
+  - name: dotnetVersion
+    type: string
+    default: '8.x'
+
+steps:
+  - task: UseDotNet@2
+    displayName: 'Use .NET SDK ${{ parameters.dotnetVersion }}'
+    inputs:
+      version: ${{ parameters.dotnetVersion }}
+      packageType: sdk
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Restore NuGet packages'
+    inputs:
+      command: restore
+      projects: ${{ parameters.projectPath }}
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Build ${{ parameters.buildConfiguration }}'
+    inputs:
+      command: build
+      projects: ${{ parameters.projectPath }}
+      arguments: '--configuration ${{ parameters.buildConfiguration }} --no-restore'
