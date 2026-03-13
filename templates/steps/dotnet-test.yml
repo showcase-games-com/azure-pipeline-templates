@@ -1,0 +1,37 @@
+parameters:
+  - name: buildConfiguration
+    type: string
+    default: Release
+  - name: projectPath
+    type: string
+    default: '**/*Tests.csproj'
+  - name: publishTestResults
+    type: boolean
+    default: true
+  - name: collectCoverage
+    type: boolean
+    default: true
+
+steps:
+  - ${{ if eq(parameters.collectCoverage, true) }}:
+    - task: DotNetCoreCLI@2
+      displayName: 'Run tests with coverage'
+      inputs:
+        command: test
+        projects: ${{ parameters.projectPath }}
+        arguments: '--configuration ${{ parameters.buildConfiguration }} --no-build --collect:"XPlat Code Coverage"'
+        publishTestResults: ${{ parameters.publishTestResults }}
+  - ${{ else }}:
+    - task: DotNetCoreCLI@2
+      displayName: 'Run tests'
+      inputs:
+        command: test
+        projects: ${{ parameters.projectPath }}
+        arguments: '--configuration ${{ parameters.buildConfiguration }} --no-build'
+        publishTestResults: ${{ parameters.publishTestResults }}
+
+  - ${{ if eq(parameters.collectCoverage, true) }}:
+    - task: PublishCodeCoverageResults@2
+      displayName: 'Publish code coverage'
+      inputs:
+        summaryFileLocation: '$(Agent.TempDirectory)/**/coverage.cobertura.xml'
